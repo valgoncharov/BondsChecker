@@ -7,6 +7,7 @@ from config import BOT_TOKEN
 from core.database import init_db
 from services.notifier import check_coupons_today
 from handlers.commands import register_handlers
+from handlers.errors import register_error_handlers
 
 logging.basicConfig(level=logging.INFO)
 
@@ -16,6 +17,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     register_handlers(dp)
+    register_error_handlers(dp)
 
     scheduler = AsyncIOScheduler()
 
