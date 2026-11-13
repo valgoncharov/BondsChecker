@@ -221,3 +221,6 @@ __marimo__/
 
 # Local agent context (not tracked)
 .agents/
+
+# Local Playwright MCP artifacts
+.playwright-mcp/

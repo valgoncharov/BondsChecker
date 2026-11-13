@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,9 @@ if not BOT_TOKEN:
 
 # MOEX ISS — бесплатный, авторизация не нужна для базовых данных
 MOEX_ISS_BASE = "https://iss.moex.com/iss"
+
+# Московское время: даты купонов приходят в МСК, по нему же работают cron-задачи
+TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 
 # Абсолютный путь к БД, чтобы не зависеть от текущего каталога запуска.
 # Переопределяется переменной окружения DB_PATH.

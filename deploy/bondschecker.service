@@ -1,0 +1,19 @@
+[Unit]
+Description=BondsChecker Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bonds
+WorkingDirectory=/opt/bonds/app/bond_notifier
+EnvironmentFile=/opt/bonds/app/.env
+Environment=TZ=Europe/Moscow
+ExecStart=/opt/bonds/app/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

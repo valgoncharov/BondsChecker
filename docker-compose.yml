@@ -1,0 +1,21 @@
+services:
+  bondschecker:
+    build: .
+    image: bondschecker:latest
+    container_name: bondschecker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /data/bonds.db
+      TZ: Europe/Moscow
+    volumes:
+      - bonds_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bonds_data:

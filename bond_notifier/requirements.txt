@@ -2,4 +2,6 @@ aiogram>=3.0
 aiohttp
 aiosqlite
 apscheduler
+certifi
 python-dotenv
+tzdata
