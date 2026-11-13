@@ -1,72 +1,165 @@
-import aiohttp
 import logging
-from datetime import datetime, date
-from typing import List, Optional
+from datetime import date, datetime
+
+import aiohttp
 
 from config import MOEX_ISS_BASE
-from core.models import CouponPayment
+from core.models import CouponPayment, SecurityInfo
 
 logger = logging.getLogger(__name__)
 
 
-async def get_coupons(session: aiohttp.ClientSession, secid: str) -> List[CouponPayment]:
+def _block(data: dict, name: str) -> tuple:
+    block = data.get(name, {}) or {}
+    return block.get("columns", []) or [], block.get("data", []) or []
+
+
+async def fetch_coupons(
+    session: aiohttp.ClientSession, secid: str
+) -> list[CouponPayment] | None:
     """
-    Получает график купонов по облигации из MOEX ISS.
-    Эндпоинт: /statistics/engines/stock/markets/bonds/bondization/{secid}
-    Возвращает список купонов, отсортированный по дате.
+    Возвращает график купонов или None при ошибке запроса.
+    Пустой список — валидный ответ «купонов нет» (например, флоатер без графика).
     """
     url = f"{MOEX_ISS_BASE}/statistics/engines/stock/markets/bonds/bondization/{secid}.json"
     try:
-        async with session.get(url) as resp:
+        async with session.get(url, params={"iss.meta": "off"}) as resp:
             if resp.status != 200:
-                logger.warning(f"MOEX ISS вернул {resp.status} для {secid}")
-                return []
+                logger.warning("MOEX ISS вернул %s для %s", resp.status, secid)
+                return None
 
             data = await resp.json()
-            coupons_block = data.get("coupons", {})
-            columns = coupons_block.get("columns", [])
-            rows = coupons_block.get("data", [])
-
-            if not columns or not rows:
-                logger.info(f"Нет данных по купонам для {secid}")
+            columns, rows = _block(data, "coupons")
+            if not columns:
+                logger.info("Нет блока coupons для %s", secid)
                 return []
 
-            # Строим индекс колонок по имени, чтобы не зависеть от порядка
-            col_idx = {name: i for i, name in enumerate(columns)}
-
-            payments = []
+            col = {name: i for i, name in enumerate(columns)}
+            payments: list[CouponPayment] = []
             for row in rows:
-                date_str = row[col_idx["coupondate"]]
+                date_str = row[col["coupondate"]] if "coupondate" in col else None
                 if not date_str:
                     continue
                 try:
-                    c_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    coupon_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                 except ValueError:
                     continue
 
-                value = row[col_idx["value"]] if "value" in col_idx else None
-                value_pct = row[col_idx["valueprc"]] if "valueprc" in col_idx else None
+                recorddate = None
+                if "recorddate" in col and row[col["recorddate"]]:
+                    try:
+                        recorddate = datetime.strptime(
+                            row[col["recorddate"]], "%Y-%m-%d"
+                        ).date()
+                    except ValueError:
+                        recorddate = None
 
-                payments.append(CouponPayment(
-                    secid=secid,
-                    coupon_date=c_date,
-                    value=float(value) if value not in (None, "") else None,
-                    value_percent=float(value_pct) if value_pct not in (None, "") else None,
-                ))
+                value = row[col["value"]] if "value" in col else None
+                value_pct = row[col["valueprc"]] if "valueprc" in col else None
+                value_rub = row[col["value_rub"]] if "value_rub" in col else None
+
+                payments.append(
+                    CouponPayment(
+                        secid=secid,
+                        coupon_date=coupon_date,
+                        value=_to_float(value),
+                        value_percent=_to_float(value_pct),
+                        value_rub=_to_float(value_rub),
+                        faceunit=row[col["faceunit"]] if "faceunit" in col else None,
+                        recorddate=recorddate,
+                        name=row[col["name"]] if "name" in col else None,
+                        isin=row[col["isin"]] if "isin" in col else None,
+                    )
+                )
 
             payments.sort(key=lambda p: p.coupon_date)
             return payments
 
-    except Exception as e:
-        logger.exception(f"Ошибка получения купонов для {secid}")
-        return []
+    except Exception:
+        logger.exception("Ошибка получения купонов для %s", secid)
+        return None
 
 
-async def get_next_coupon(session: aiohttp.ClientSession, secid: str) -> Optional[CouponPayment]:
-    """Возвращает ближайший будущий купон (или сегодняшний)."""
+async def get_coupons(
+    session: aiohttp.ClientSession, secid: str
+) -> list[CouponPayment]:
+    coupons = await fetch_coupons(session, secid)
+    return coupons or []
+
+
+async def get_next_coupon(
+    session: aiohttp.ClientSession, secid: str
+) -> CouponPayment | None:
     coupons = await get_coupons(session, secid)
     today = date.today()
-    for c in coupons:
-        if c.coupon_date >= today:
-            return c
+    for coupon in coupons:
+        if coupon.coupon_date >= today:
+            return coupon
     return None
+
+
+async def search_securities(
+    session: aiohttp.ClientSession, query: str, limit: int = 8
+) -> list[SecurityInfo]:
+    """Ищет торгуемые облигации MOEX по названию, ISIN или тикеру."""
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    url = f"{MOEX_ISS_BASE}/securities.json"
+    params = {"q": query, "iss.meta": "off", "limit": 100}
+    try:
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                logger.warning("MOEX search вернул %s для %r", resp.status, query)
+                return []
+            data = await resp.json()
+    except Exception:
+        logger.exception("Ошибка поиска бумаги по запросу %r", query)
+        return []
+
+    columns, rows = _block(data, "securities")
+    if not columns:
+        return []
+    col = {name: i for i, name in enumerate(columns)}
+
+    found: list[SecurityInfo] = []
+    for row in rows:
+        group = row[col["group"]] if "group" in col else None
+        is_traded = bool(row[col["is_traded"]]) if "is_traded" in col else False
+        if group != "stock_bonds" or not is_traded:
+            continue
+        found.append(
+            SecurityInfo(
+                secid=row[col["secid"]],
+                shortname=row[col["shortname"]] if "shortname" in col else None,
+                isin=row[col["isin"]] if "isin" in col else None,
+                type=row[col["type"]] if "type" in col else None,
+                group=group,
+                is_traded=is_traded,
+                emitent_title=(
+                    row[col["emitent_title"]] if "emitent_title" in col else None
+                ),
+            )
+        )
+
+    needle = query.casefold()
+
+    def rank(item: SecurityInfo) -> tuple:
+        exact = (item.secid or "").casefold() == needle or (
+            item.isin or ""
+        ).casefold() == needle
+        starts = (item.shortname or "").casefold().startswith(needle)
+        return (0 if exact else 1, 0 if starts else 1, item.secid or "")
+
+    found.sort(key=rank)
+    return found[:limit]
+
+
+def _to_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
